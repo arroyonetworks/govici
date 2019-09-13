@@ -785,6 +785,11 @@ func (m *Message) marshalFromMap(rv reflect.Value) error {
 }
 
 func (m *Message) marshalField(name string, rv reflect.Value) error {
+
+	if rv.Kind() == reflect.Interface {
+		rv = reflect.ValueOf(rv)
+	}
+
 	switch rv.Kind() {
 
 	case reflect.String:
@@ -874,7 +879,7 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
 		}
 		field.Set(rv)
-		
+
 	case reflect.Slice:
 		if _, ok := rv.Interface().([]string); !ok {
 			return fmt.Errorf("%v: []string and %v", errUnmarshalTypeMismatch, rv.Type())
