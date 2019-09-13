@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 )
 
 const (
@@ -710,6 +711,9 @@ func emptyMessageElement(rv reflect.Value) bool {
 			z = z && emptyMessageElement(rv.Field(i))
 		}
 		return z
+
+	case reflect.Map:
+		return rv.IsNil() || len(rv.MapKeys()) == 0
 	}
 
 	return rv.Interface() == reflect.Zero(rv.Type()).Interface()
@@ -718,15 +722,24 @@ func emptyMessageElement(rv reflect.Value) bool {
 func (m *Message) marshal(v interface{}) error {
 	rv := reflect.ValueOf(v)
 
-	// v must either be a struct or a pointer to one
 	if rv.Kind() == reflect.Ptr {
 		rv = reflect.Indirect(rv)
 	}
 
-	if rv.Kind() != reflect.Struct {
+	switch rv.Kind() {
+	case reflect.Struct:
+		return m.marshalFromStruct(rv)
+
+	case reflect.Map:
+		return m.marshalFromMap(rv)
+
+	default:
 		return fmt.Errorf("%v: %v", errMarshalUnsupportedType, rv.Kind())
 	}
 
+}
+
+func (m *Message) marshalFromStruct(rv reflect.Value) error {
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		rf := rt.Field(i)
@@ -755,11 +768,43 @@ func (m *Message) marshal(v interface{}) error {
 	return nil
 }
 
+func (m *Message) marshalFromMap(rv reflect.Value) error {
+	iter := rv.MapRange()
+	for iter.Next() {
+
+		k := iter.Key()
+		v := iter.Value()
+
+		err := m.marshalField(k.String(), v)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (m *Message) marshalField(name string, rv reflect.Value) error {
 	switch rv.Kind() {
 
-	case reflect.String, reflect.Slice, reflect.Array:
+	case reflect.String:
+		return m.addItem(name, rv.String())
+
+	case reflect.Slice, reflect.Array:
 		return m.addItem(name, rv.Interface())
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return m.addItem(name, strconv.FormatInt(rv.Int(), 10))
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return m.addItem(name, strconv.FormatUint(rv.Uint(), 10))
+
+	case reflect.Bool:
+		if rv.Bool() {
+			return m.addItem(name, "yes")
+		} else {
+			return m.addItem(name, "no")
+		}
 
 	case reflect.Ptr:
 		if _, ok := rv.Interface().(*Message); ok {
@@ -773,7 +818,7 @@ func (m *Message) marshalField(name string, rv reflect.Value) error {
 
 		return m.addItem(name, msg)
 
-	case reflect.Struct:
+	case reflect.Struct, reflect.Map:
 		msg := NewMessage()
 		if err := msg.marshal(rv.Interface()); err != nil {
 			return err
@@ -829,7 +874,7 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
 		}
 		field.Set(rv)
-
+		
 	case reflect.Slice:
 		if _, ok := rv.Interface().([]string); !ok {
 			return fmt.Errorf("%v: []string and %v", errUnmarshalTypeMismatch, rv.Type())
