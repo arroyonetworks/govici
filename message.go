@@ -79,7 +79,8 @@ var (
 	errUnmarshalBadType      = fmt.Errorf("%v: type must be non-nil pointer", errUnmarshal)
 	errUnmarshalTypeMismatch = fmt.Errorf("%v: incompatible types", errUnmarshal)
 	errUnmarshalNonMessage   = fmt.Errorf("%v: encountered non-message type", errUnmarshal)
-)
+	errUnmarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errUnmarshal))
+
 
 // MessageStream is used to feed continuous data during a command request, and simply
 // contains a slice of *Message.
@@ -912,7 +913,11 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 		}
 
 		field.Set(reflect.Indirect(fp))
+
+	default:
+		return fmt.Errorf("%v: %v", errUnmarshalUnsupportedType, field.Kind())
 	}
+
 
 	return nil
 }
