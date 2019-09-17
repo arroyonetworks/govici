@@ -28,6 +28,7 @@ import (
 	"io"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -76,11 +77,12 @@ var (
 	errMarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errMarshal)
 
 	// Unmarshaling errors
-	errUnmarshalBadType      = fmt.Errorf("%v: type must be non-nil pointer", errUnmarshal)
-	errUnmarshalTypeMismatch = fmt.Errorf("%v: incompatible types", errUnmarshal)
-	errUnmarshalNonMessage   = fmt.Errorf("%v: encountered non-message type", errUnmarshal)
-	errUnmarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errUnmarshal))
-
+	errUnmarshalBadType         = fmt.Errorf("%v: type must be non-nil pointer", errUnmarshal)
+	errUnmarshalTypeMismatch    = fmt.Errorf("%v: incompatible types", errUnmarshal)
+	errUnmarshalNonMessage      = fmt.Errorf("%v: encountered non-message type", errUnmarshal)
+	errUnmarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errUnmarshal)
+	errUnmarshalParseFailure    = fmt.Errorf("%v: failed to parse value", errUnmarshal)
+)
 
 // MessageStream is used to feed continuous data during a command request, and simply
 // contains a slice of *Message.
@@ -840,15 +842,34 @@ func (m *Message) marshalField(name string, rv reflect.Value) error {
 func (m *Message) unmarshal(v interface{}) error {
 	rv := reflect.ValueOf(v)
 
-	if rv.Kind() != reflect.Ptr {
-		return errUnmarshalBadType
-	}
-
 	if rv.IsNil() {
 		return errUnmarshalBadType
 	}
 
-	rt := reflect.Indirect(rv).Type()
+	switch rv.Kind() {
+	case reflect.Map:
+		return m.unmarshalToMap(rv)
+
+	case reflect.Ptr:
+
+		// Must be a pointer to a struct.
+
+		rv = reflect.Indirect(rv)
+		if rv.Kind() != reflect.Struct {
+			return fmt.Errorf("%v: cannot unmarshal into non-struct pointer %v", errUnmarshalUnsupportedType, rv.Kind())
+		}
+
+		return m.unmarshalToStruct(rv)
+
+	default:
+		return fmt.Errorf("%v: cannot unmarshal into %v", errUnmarshalUnsupportedType, rv.Kind())
+	}
+
+}
+
+func (m *Message) unmarshalToStruct(rv reflect.Value) error {
+	rt := rv.Type()
+
 	for i := 0; i < rt.NumField(); i++ {
 		rf := rt.Field(i)
 		tag := newMessageTag(rf.Tag)
@@ -858,7 +879,7 @@ func (m *Message) unmarshal(v interface{}) error {
 			continue
 		}
 
-		rfv := rv.Elem().Field(i)
+		rfv := rv.Field(i)
 		if !rfv.CanInterface() {
 			continue
 		}
@@ -872,6 +893,41 @@ func (m *Message) unmarshal(v interface{}) error {
 	return nil
 }
 
+func (m *Message) unmarshalToMap(rv reflect.Value) error {
+	for _, k := range m.keys {
+
+		value, ok := m.data[k]
+		if !ok {
+			continue
+		}
+
+		// Map Value Kind
+		mapElemType := rv.Type().Elem()
+		switch mapElemType.Kind() {
+
+		case reflect.Ptr:
+			rv.SetMapIndex(reflect.ValueOf(k), reflect.New(mapElemType.Elem()))
+
+		case reflect.Struct:
+			rv.SetMapIndex(reflect.ValueOf(k), reflect.New(mapElemType))
+
+		case reflect.Map:
+			rv.SetMapIndex(reflect.ValueOf(k), reflect.MakeMap(mapElemType))
+
+		}
+
+		rfv := rv.MapIndex(reflect.ValueOf(k))
+
+		err := m.unmarshalField(rfv, reflect.ValueOf(value))
+		if err != nil {
+			return err
+		}
+
+	}
+
+	return nil
+}
+
 func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 	switch field.Kind() {
 
@@ -880,6 +936,49 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
 		}
 		field.Set(rv)
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		raw, ok := rv.Interface().(string)
+		if !ok {
+			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
+		}
+
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fmt.Errorf("%v: %v as %v", errUnmarshalParseFailure, raw, field.Type())
+		}
+
+		field.SetInt(parsed)
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		raw, ok := rv.Interface().(string)
+		if !ok {
+			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
+		}
+
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return fmt.Errorf("%v: %v as %v", errUnmarshalParseFailure, raw, field.Type())
+		}
+
+		field.SetUint(parsed)
+
+	case reflect.Bool:
+		raw, ok := rv.Interface().(string)
+		if !ok {
+			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
+		}
+
+		switch strings.ToLower(raw) {
+		case "yes":
+			field.SetBool(true)
+
+		case "no":
+			field.SetBool(false)
+
+		default:
+			return fmt.Errorf("%v: %v as %v", errUnmarshalParseFailure, raw, field.Type())
+		}
 
 	case reflect.Slice:
 		if _, ok := rv.Interface().([]string); !ok {
@@ -914,10 +1013,22 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 
 		field.Set(reflect.Indirect(fp))
 
+	case reflect.Map:
+		msg, ok := rv.Interface().(*Message)
+		if !ok {
+			return fmt.Errorf("%v: %v", errUnmarshalNonMessage, rv.Type())
+		}
+
+		fp := reflect.MakeMap(field.Type())
+		if err := msg.unmarshal(fp.Interface()); err != nil {
+			return err
+		}
+
+		field.Set(fp)
+
 	default:
 		return fmt.Errorf("%v: %v", errUnmarshalUnsupportedType, field.Kind())
 	}
-
 
 	return nil
 }
