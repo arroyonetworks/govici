@@ -998,7 +998,16 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 			return fmt.Errorf("%v: %v", errUnmarshalNonMessage, rv.Type())
 		}
 
-		return msg.unmarshal(field.Interface())
+		fp := field
+		if field.IsNil() {
+			fp = reflect.New(field.Type().Elem())
+		}
+
+		if err := msg.unmarshal(fp.Interface()); err != nil {
+			return err
+		}
+
+		field.Set(fp)
 
 	case reflect.Struct:
 		msg, ok := rv.Interface().(*Message)
