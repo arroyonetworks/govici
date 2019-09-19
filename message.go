@@ -1001,13 +1001,12 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 		fp := field
 		if field.IsNil() {
 			fp = reflect.New(field.Type().Elem())
+			field.Set(fp)
 		}
 
 		if err := msg.unmarshal(fp.Interface()); err != nil {
 			return err
 		}
-
-		field.Set(fp)
 
 	case reflect.Struct:
 		msg, ok := rv.Interface().(*Message)
