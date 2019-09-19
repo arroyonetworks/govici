@@ -777,10 +777,7 @@ func (m *Message) marshalFromMap(rv reflect.Value) error {
 
 		k := iter.Key()
 		v := iter.Value()
-		tmp := reflect.TypeOf(v)
-		fmt.Println(tmp)
-		_, ok := v.Interface().(*Message)
-		fmt.Println(ok)
+
 		err := m.marshalField(k.String(), v)
 		if err != nil {
 			return err
