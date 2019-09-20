@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 )
 
 const (
@@ -75,9 +76,11 @@ var (
 	errMarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errMarshal)
 
 	// Unmarshaling errors
-	errUnmarshalBadType      = fmt.Errorf("%v: type must be non-nil pointer", errUnmarshal)
-	errUnmarshalTypeMismatch = fmt.Errorf("%v: incompatible types", errUnmarshal)
-	errUnmarshalNonMessage   = fmt.Errorf("%v: encountered non-message type", errUnmarshal)
+	errUnmarshalBadType         = fmt.Errorf("%v: type must be non-nil pointer", errUnmarshal)
+	errUnmarshalTypeMismatch    = fmt.Errorf("%v: incompatible types", errUnmarshal)
+	errUnmarshalNonMessage      = fmt.Errorf("%v: encountered non-message type", errUnmarshal)
+	errUnmarshalUnsupportedType = fmt.Errorf("%v: encountered unsupported type", errUnmarshal)
+	errUnmarshalParseFailure    = fmt.Errorf("%v: failed to parse value", errUnmarshal)
 )
 
 // MessageStream is used to feed continuous data during a command request, and simply
@@ -699,7 +702,15 @@ func newMessageTag(tag reflect.StructTag) messageTag {
 }
 
 func emptyMessageElement(rv reflect.Value) bool {
+
 	switch rv.Kind() {
+
+	// These types are never considered empty since their zero values
+	// can be considered valid.
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Bool:
+			return false
 
 	case reflect.Slice:
 		return rv.IsNil()
@@ -761,6 +772,13 @@ func (m *Message) marshalField(name string, rv reflect.Value) error {
 	case reflect.String, reflect.Slice, reflect.Array:
 		return m.addItem(name, rv.Interface())
 
+	case reflect.Bool:
+		if rv.Bool() {
+			return m.addItem(name, "yes")
+		} else {
+			return m.addItem(name, "no")
+		}
+
 	case reflect.Ptr:
 		if _, ok := rv.Interface().(*Message); ok {
 			return m.addItem(name, rv.Interface())
@@ -788,10 +806,6 @@ func (m *Message) marshalField(name string, rv reflect.Value) error {
 
 func (m *Message) unmarshal(v interface{}) error {
 	rv := reflect.ValueOf(v)
-
-	if rv.Kind() != reflect.Ptr {
-		return errUnmarshalBadType
-	}
 
 	if rv.IsNil() {
 		return errUnmarshalBadType
@@ -830,6 +844,23 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 		}
 		field.Set(rv)
 
+	case reflect.Bool:
+		raw, ok := rv.Interface().(string)
+		if !ok {
+			return fmt.Errorf("%v: string and %v", errUnmarshalTypeMismatch, rv.Type())
+		}
+
+		switch strings.ToLower(raw) {
+		case "yes":
+			field.SetBool(true)
+
+		case "no":
+			field.SetBool(false)
+
+		default:
+			return fmt.Errorf("%v: %v as %v", errUnmarshalParseFailure, raw, field.Type())
+		}
+
 	case reflect.Slice:
 		if _, ok := rv.Interface().([]string); !ok {
 			return fmt.Errorf("%v: []string and %v", errUnmarshalTypeMismatch, rv.Type())
@@ -862,6 +893,9 @@ func (m *Message) unmarshalField(field reflect.Value, rv reflect.Value) error {
 		}
 
 		field.Set(reflect.Indirect(fp))
+
+	default:
+		return fmt.Errorf("%v: %v", errUnmarshalUnsupportedType, field.Kind())
 	}
 
 	return nil
